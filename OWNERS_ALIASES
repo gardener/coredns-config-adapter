@@ -1,0 +1,13 @@
+# See the OWNERS docs at https://go.k8s.io/owners
+
+aliases:
+  coredns-config-adapter-reviewers:
+  - axel7born
+  - DockToFuture
+  - domdom82
+  - ScheererJ
+  coredns-config-adapter-approvers:
+  - axel7born
+  - DockToFuture
+  - domdom82
+  - ScheererJ

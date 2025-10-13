@@ -1,0 +1,36 @@
+  changeme.override: '# checkout the docs on how to use: https://github.com/gardener/gardener/blob/master/docs/usage/custom-dns-config.md'
+  foobar.server: |
+    foobar.server:8053 {
+        errors
+        cache {
+            success 5000
+            denial 2500
+        }
+        forward . 10.17.220.80
+    }
+    foobar.server:53 {
+        errors
+        cache 30
+        forward . 10.17.220.80
+    }  
+    foo.server:8053 {
+        errors
+        cache 30
+        rewrite name exact foo.server kubernetes.default.svc.cluster.local
+        forward kubernetes.default.svc.cluster.local 10.255.0.7:8053
+    }
+    bar.server:8053 {
+        errors
+        cache 30
+        rewrite name exact bar.server kubernetes.default.svc.cluster.local
+        forward kubernetes.default.svc.cluster.local 10.255.0.7:53
+    }
+  cloud.server: |
+    cloud.server:8053 {
+        errors
+        cache {
+            success 5000
+            denial 2500
+        }
+        forward . 10.17.220.80
+    }
