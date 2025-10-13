@@ -41,7 +41,7 @@ check: $(GOIMPORTS) $(GOLANGCI_LINT)
 # Run go fmt against code
 .PHONY: format
 format: $(GOIMPORTS)
-	$(GOIMPORTS) -l -w  main.go ./pkg
+	$(GOIMPORTS) -l -w  main.go
 
 .PHONY: docker-images
 docker-images:
@@ -53,7 +53,7 @@ docker-images-linux-amd64:
 
 .PHONY: generate
 generate: $(MOCKGEN)
-	@MOCKGEN=$(shell realpath $(MOCKGEN)) go generate ./pkg/...
+	@MOCKGEN=$(shell realpath $(MOCKGEN)) go generate
 
 .PHONY: sast
 sast: $(GOSEC)
@@ -66,7 +66,7 @@ sast-report: $(GOSEC)
 # Run tests
 .PHONY: test
 test:
-	@env go test ./pkg/...
+	@env go test
 
 .PHONY: update-dependencies
 update-dependencies:
