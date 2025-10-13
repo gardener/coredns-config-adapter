@@ -31,7 +31,12 @@ func main() {
 	if err != nil {
 		log.Fatal(err)
 	}
-	defer watcher.Close()
+
+	defer func() {
+		if err := watcher.Close(); err != nil {
+			log.Println("Error closing watcher:", err)
+		}
+	}()
 
 	// Initial config write
 	writeMu.Lock()
