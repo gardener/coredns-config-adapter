@@ -75,7 +75,7 @@ func writeNewConfigToFile(inputDir, outputDir, bindStatement string) error {
 	for _, entry := range entries {
 		name := entry.Name()
 		if !entry.IsDir() && isServerFile(name) {
-			serverConfig, err := os.ReadFile(inputDir + "/" + name)
+			serverConfig, err := os.ReadFile(inputDir + "/" + name) // #nosec #G304 -- Loaded from ConfigMap
 			if err != nil {
 				return fmt.Errorf("error reading file %s: %w", name, err)
 			}
