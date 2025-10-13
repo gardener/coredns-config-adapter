@@ -88,7 +88,7 @@ func writeNewConfigToFile(inputDir, outputDir, bindStatement string) error {
 	}
 
 	outputFile := outputDir + "/" + "custom-server-block.override"
-	err = os.WriteFile(outputFile, buf.Bytes(), 0644)
+	err = os.WriteFile(outputFile, buf.Bytes(), 0600)
 	if err != nil {
 		return fmt.Errorf("error writing output file: %w", err)
 	}
