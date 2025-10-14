@@ -16,7 +16,7 @@ COPY . .
 ARG TARGETARCH
 RUN make release GOARCH=$TARGETARCH
 
-############# aws-ipam-controller
+############# coredns-config-adapter
 FROM gcr.io/distroless/static-debian12:nonroot AS coredns-config-adapter
 
 COPY --from=builder /build/coredns-config-adapter /coredns-config-adapter
