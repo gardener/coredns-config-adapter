@@ -32,7 +32,7 @@ go build -o coredns-config-adapter
 
 ### Example
 
-Suppose you have a Kubernetes ConfigMap mounted at `/etc/custom` with files like `foo.server`. The adapter will watch this directory and automatically update `/etc/generated-config/custom-server-block.override` whenever any `.server` file changes.
+Suppose you have a Kubernetes ConfigMap mounted at `/etc/custom` with files like `foo.server`. The adapter will watch this directory and automatically update `/etc/generated-config/custom-server-block.server` whenever any `.server` file changes.
 
 ## How It Works
 
@@ -52,5 +52,5 @@ Suppose you have a Kubernetes ConfigMap mounted at `/etc/custom` with files like
 ## Notes
 
 - Only files ending with `.server` are processed.
-- The output file is always named `custom-server-block.override` in the output directory.
+- The output file is always named `custom-server-block.server` in the output directory.
 - The `coredns-conig-adapter` is designed to run as a sidecar or helper in Kubernetes environments.
