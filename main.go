@@ -40,14 +40,17 @@ func main() {
 
 	// Initial config write
 	writeMu.Lock()
+	log.Println("Writing initial configuration file")
 	err = writeNewConfigToFile(*inputDir, *outputDir, *bindStatement)
 	writeMu.Unlock()
 	if err != nil {
 		log.Println("Error writing new config:", err)
 	}
 
+	log.Println("Starting watch handler")
 	startWatcher(watcher, inputDir, outputDir, bindStatement, writeMu)
 
+	log.Println("Watch directory", *inputDir)
 	// Watch input directory for new/deleted and modified files
 	err = watcher.Add(*inputDir)
 	if err != nil {
@@ -62,6 +65,7 @@ func loadServerBlocks(filename string, input io.Reader) ([]caddyfile.ServerBlock
 	if err != nil {
 		return nil, err
 	}
+
 	return parsed, nil
 }
 
