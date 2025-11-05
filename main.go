@@ -139,17 +139,20 @@ func buildServerConfig(serverConfig []byte, bindStatement string, buf *bytes.Buf
 
 	var updatedBlocks []caddyfile.ServerBlock
 	for _, block := range serverBlocks {
-		for i := range block.Keys {
+		for i := len(block.Keys) - 1; i >= 0; i-- {
 			if strings.Contains(string(block.Keys[i]), ":8053") {
 				block.Keys[i] = strings.Replace(string(block.Keys[i]), ":8053", ":53", 1)
-				updatedBlocks = append(updatedBlocks, block)
 				continue
 			}
 
 			if strings.HasSuffix(string(block.Keys[i]), ":53") {
-				updatedBlocks = append(updatedBlocks, block)
+				continue
 			}
-
+			// Remove this key from the block as it is has no port with number 8053 or 53 specified
+			block.Keys = append(block.Keys[:i], block.Keys[i+1:]...)
+		}
+		if len(block.Keys) > 0 {
+			updatedBlocks = append(updatedBlocks, block)
 		}
 	}
 
