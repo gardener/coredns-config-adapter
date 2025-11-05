@@ -92,6 +92,7 @@ func writeNewConfigToFile(inputDir, outputDir, bindStatement string) error {
 	}
 
 	outputFile := outputDir + "/" + "custom-server-block.server"
+	log.Println("Writing configuration to", outputFile)
 	err = os.WriteFile(outputFile, buf.Bytes(), 0600)
 	if err != nil {
 		return fmt.Errorf("error writing output file: %w", err)
@@ -169,47 +170,42 @@ func buildServerConfig(serverConfig []byte, bindStatement string, buf *bytes.Buf
 				continue
 			}
 
-			if !strings.Contains(string(token[0].Text), block.Keys[0]) {
-				texts := func(tokens []caddyfile.Token) string {
-					if len(tokens) == 0 {
-						return ""
-					}
+			texts := func(tokens []caddyfile.Token) string {
+				if len(tokens) == 0 {
+					return ""
+				}
 
-					var result strings.Builder
-					indentLevel := 0
-					for i, t := range tokens {
-						text := string(t.Text)
-						if i > 0 && t.Line != tokens[i-1].Line {
-							result.WriteString("\n")
-							currentIndent := indentLevel
-							if text == "}" && currentIndent > 0 {
-								currentIndent--
-							}
-
-							if currentIndent > 0 {
-								result.WriteString(strings.Repeat("    ", currentIndent))
-							}
-						} else if i > 0 {
-							result.WriteString(" ")
+				var result strings.Builder
+				indentLevel := 0
+				for i, t := range tokens {
+					text := string(t.Text)
+					if i > 0 && t.Line != tokens[i-1].Line {
+						result.WriteString("\n")
+						currentIndent := indentLevel
+						if text == "}" && currentIndent > 0 {
+							currentIndent--
 						}
 
-						result.WriteString(text)
-						if text == "{" {
-							indentLevel++
-						} else if text == "}" && indentLevel > 0 {
-							indentLevel--
+						if currentIndent > 0 {
+							result.WriteString(strings.Repeat("    ", currentIndent))
 						}
+					} else if i > 0 {
+						result.WriteString(" ")
 					}
-					return result.String()
-				}(token)
-				lines := strings.Split(texts, "\n")
-				for _, line := range lines {
-					if strings.TrimSpace(line) != "" {
-						buf.WriteString("    " + line + "\n")
-					} else {
-						buf.WriteString("\n")
+
+					result.WriteString(text)
+					if text == "{" {
+						indentLevel++
+					} else if text == "}" && indentLevel > 0 {
+						indentLevel--
 					}
 				}
+				return result.String()
+			}(token)
+
+			lines := strings.Split(texts, "\n")
+			for _, line := range lines {
+				buf.WriteString("    " + line + "\n")
 			}
 		}
 		buf.WriteString("}\n\n")
