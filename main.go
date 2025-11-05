@@ -40,14 +40,17 @@ func main() {
 
 	// Initial config write
 	writeMu.Lock()
+	log.Println("Writing initial configuration file")
 	err = writeNewConfigToFile(*inputDir, *outputDir, *bindStatement)
 	writeMu.Unlock()
 	if err != nil {
 		log.Println("Error writing new config:", err)
 	}
 
+	log.Println("Starting watch handler")
 	startWatcher(watcher, inputDir, outputDir, bindStatement, writeMu)
 
+	log.Println("Watch directory", *inputDir)
 	// Watch input directory for new/deleted and modified files
 	err = watcher.Add(*inputDir)
 	if err != nil {
@@ -62,6 +65,7 @@ func loadServerBlocks(filename string, input io.Reader) ([]caddyfile.ServerBlock
 	if err != nil {
 		return nil, err
 	}
+
 	return parsed, nil
 }
 
@@ -88,6 +92,7 @@ func writeNewConfigToFile(inputDir, outputDir, bindStatement string) error {
 	}
 
 	outputFile := outputDir + "/" + "custom-server-block.server"
+	log.Println("Writing configuration to", outputFile)
 	err = os.WriteFile(outputFile, buf.Bytes(), 0600)
 	if err != nil {
 		return fmt.Errorf("error writing output file: %w", err)
@@ -139,17 +144,20 @@ func buildServerConfig(serverConfig []byte, bindStatement string, buf *bytes.Buf
 
 	var updatedBlocks []caddyfile.ServerBlock
 	for _, block := range serverBlocks {
-		for i := range block.Keys {
+		for i := len(block.Keys) - 1; i >= 0; i-- {
 			if strings.Contains(string(block.Keys[i]), ":8053") {
 				block.Keys[i] = strings.Replace(string(block.Keys[i]), ":8053", ":53", 1)
-				updatedBlocks = append(updatedBlocks, block)
 				continue
 			}
 
 			if strings.HasSuffix(string(block.Keys[i]), ":53") {
-				updatedBlocks = append(updatedBlocks, block)
+				continue
 			}
-
+			// Remove this key from the block as it is has no port with number 8053 or 53 specified
+			block.Keys = append(block.Keys[:i], block.Keys[i+1:]...)
+		}
+		if len(block.Keys) > 0 {
+			updatedBlocks = append(updatedBlocks, block)
 		}
 	}
 
@@ -162,14 +170,42 @@ func buildServerConfig(serverConfig []byte, bindStatement string, buf *bytes.Buf
 				continue
 			}
 
-			if !strings.Contains(string(token[0].Text), block.Keys[0]) {
-				buf.WriteString("    " + strings.Join(func(tokens []caddyfile.Token) []string {
-					var texts []string
-					for _, t := range tokens {
-						texts = append(texts, string(t.Text))
+			texts := func(tokens []caddyfile.Token) string {
+				if len(tokens) == 0 {
+					return ""
+				}
+
+				var result strings.Builder
+				indentLevel := 0
+				for i, t := range tokens {
+					text := string(t.Text)
+					if i > 0 && t.Line != tokens[i-1].Line {
+						result.WriteString("\n")
+						currentIndent := indentLevel
+						if text == "}" && currentIndent > 0 {
+							currentIndent--
+						}
+
+						if currentIndent > 0 {
+							result.WriteString(strings.Repeat("    ", currentIndent))
+						}
+					} else if i > 0 {
+						result.WriteString(" ")
 					}
-					return texts
-				}(token), " ") + "\n")
+
+					result.WriteString(text)
+					if text == "{" {
+						indentLevel++
+					} else if text == "}" && indentLevel > 0 {
+						indentLevel--
+					}
+				}
+				return result.String()
+			}(token)
+
+			lines := strings.Split(texts, "\n")
+			for _, line := range lines {
+				buf.WriteString("    " + line + "\n")
 			}
 		}
 		buf.WriteString("}\n\n")
