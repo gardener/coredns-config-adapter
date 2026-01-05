@@ -5,7 +5,7 @@ module github.com/gardener/coredns-config-adapter
 go 1.25.0
 
 require (
-	github.com/coredns/caddy v1.1.3
+	github.com/coredns/caddy v1.1.4
 	github.com/fsnotify/fsnotify v1.9.0
 	github.com/golang/mock v1.6.0
 	golang.org/x/tools v0.40.0
