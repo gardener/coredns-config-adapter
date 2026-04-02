@@ -2,7 +2,7 @@ module github.com/gardener/coredns-config-adapter
 
 // Note this minimum version requirement. CoreDNS supports the last two
 // Go versions. This follows the upstream Go project support.
-go 1.25.0
+go 1.26.1
 
 require (
 	github.com/coredns/caddy v1.1.3
