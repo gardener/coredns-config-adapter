@@ -17,7 +17,7 @@ ARG TARGETARCH
 RUN make release GOARCH=$TARGETARCH
 
 ############# coredns-config-adapter
-FROM gcr.io/distroless/static-debian12:nonroot AS coredns-config-adapter
+FROM gcr.io/distroless/static-debian13:nonroot AS coredns-config-adapter
 
 COPY --from=builder /build/coredns-config-adapter /coredns-config-adapter
 ENTRYPOINT ["/coredns-config-adapter"]
