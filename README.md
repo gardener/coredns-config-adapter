@@ -30,6 +30,17 @@ go build -o coredns-config-adapter
 - `-outputDir`: Directory to write the generated config file (default: `/etc/generated-config`)
 - `-bind`: Bind statement to insert into each server block
 
+When a server block references a CoreDNS plugin that is not compiled into
+`node-local-dns` (e.g. `file`, `ready`, `kubernetes`), the adapter replaces
+its body with a `forward . <upstream>` statement so the queries are answered
+by CoreDNS instead of crashing `node-local-dns`.
+
+The `<upstream>` address is read from the `KUBE_DNS_UPSTREAM_SERVICE_HOST`
+environment variable, which the kubelet injects into every Pod for the
+`kube-dns-upstream` Service that node-local-dns creates via its
+`-upstreamsvc` argument. Operators do not need to configure the address
+manually; the binary fails fast on startup if the env var is missing.
+
 ### Example
 
 Suppose you have a Kubernetes ConfigMap mounted at `/etc/custom` with files like `foo.server`. The adapter will watch this directory and automatically update `/etc/generated-config/custom-server-block.server` whenever any `.server` file changes.
