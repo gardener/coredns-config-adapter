@@ -6,7 +6,7 @@ go 1.26.1
 
 require (
 	github.com/coredns/caddy v1.1.4
-	github.com/fsnotify/fsnotify v1.10.0
+	github.com/fsnotify/fsnotify v1.10.1
 	github.com/golang/mock v1.6.0
 	golang.org/x/tools v0.44.0
 )
