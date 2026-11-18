@@ -6,276 +6,384 @@ package main
 
 import (
 	"bytes"
+	"os"
+	"path/filepath"
+	"reflect"
+	"sort"
 	"strings"
 	"testing"
 )
 
 const (
 	testBind       = "bind 169.254.20.10 100.104.0.10"
-	testClusterDNS = "100.104.0.10"
+	testClusterDNS = "100.104.0.11"
 )
 
-func runBuild(t *testing.T, input string) string {
+var testSkipZones = parseSkipZones(defaultSkipZones)
+
+func runBuild(t *testing.T, inputs ...string) string {
 	t.Helper()
-	var buf bytes.Buffer
-	if err := buildServerConfig([]byte(input), testBind, testClusterDNS, &buf); err != nil {
-		t.Fatalf("buildServerConfig returned error: %v", err)
+	zones := map[string]struct{}{}
+	for _, input := range inputs {
+		if err := collectZones([]byte(input), testSkipZones, zones); err != nil {
+			t.Fatalf("collectZones returned error: %v", err)
+		}
 	}
+	var buf bytes.Buffer
+	renderServerBlocks(zones, testBind, testClusterDNS, true, &buf)
 	return buf.String()
 }
 
-// TestQuotingPreservedForTemplateAnswer covers the `template` plugin's
-// `answer` directive, which uses a quoted multi-token string. The lexer
-// strips the quotes when parsing, so the adapter has to re-quote any token
-// whose text contains whitespace, otherwise the regenerated Corefile
-// produces "unclosed action" errors when parsed again.
-func TestQuotingPreservedForTemplateAnswer(t *testing.T) {
-	input := `example.com:8053 {
-    log
-    errors
-    template IN ANY example.com {
-        match "^foo-[0-9a-z]+\.(example\.com\.)$|^bar-.*\.(example\.com\.)$"
-        answer "{{ .Name }} 60 IN A 10.250.0.5"
-        fallthrough
-    }
-}
-`
-	out := runBuild(t, input)
-
-	if !strings.Contains(out, `answer "{{ .Name }} 60 IN A 10.250.0.5"`) {
-		t.Errorf("expected `answer` directive to keep its quoted argument; got:\n%s", out)
-	}
-	// The match regex contains pipe and special characters but no whitespace,
-	// so it should NOT be wrapped in quotes (the original input also did not
-	// strictly need quotes for it, but it was provided quoted). Either form
-	// is acceptable as long as it parses back to a single token.
-	if !strings.Contains(out, "match ") {
-		t.Errorf("expected `match` directive in output:\n%s", out)
-	}
-
-	// Round-trip: the produced Corefile must parse cleanly again.
-	if _, err := loadServerBlocks("Corefile", strings.NewReader(out)); err != nil {
-		t.Errorf("regenerated config failed to parse: %v\n%s", err, out)
-	}
+// assertForwardOnly re-parses the generated configuration and verifies that it
+// consists exclusively of the fixed forwarding template, one block per
+// expected zone, and nothing else.
+func assertForwardOnly(t *testing.T, out string, wantZones ...string) {
+	t.Helper()
+	assertForwardOnlyWithTransport(t, out, true, wantZones...)
 }
 
-// TestQuotingPreservedAcrossRoundTrip ensures that any token whose text
-// contains whitespace is re-emitted as a quoted single token.
-func TestQuotingPreservedAcrossRoundTrip(t *testing.T) {
-	input := `example.org:8053 {
-    template IN ANY example.org {
-        answer "{{ .Name }} 60 IN A 1.2.3.4"
-    }
-}
-`
-	out := runBuild(t, input)
-
-	parsed, err := loadServerBlocks("Corefile", strings.NewReader(out))
+func assertForwardOnlyWithTransport(t *testing.T, out string, forceTCP bool, wantZones ...string) {
+	t.Helper()
+	blocks, err := loadServerBlocks("Corefile", strings.NewReader(out))
 	if err != nil {
-		t.Fatalf("regenerated config did not parse: %v\n%s", err, out)
+		t.Fatalf("generated config does not parse: %v\n%s", err, out)
 	}
-	if len(parsed) != 1 {
-		t.Fatalf("expected 1 server block in regenerated output, got %d:\n%s", len(parsed), out)
-	}
-	templateTokens, ok := parsed[0].Tokens["template"]
-	if !ok {
-		t.Fatalf("regenerated output is missing the template directive:\n%s", out)
-	}
-	// Find the `answer` token and verify its argument is a single token with
-	// the original whitespace-containing text.
-	var answerArg string
-	for i, tok := range templateTokens {
-		if tok.Text == "answer" && i+1 < len(templateTokens) {
-			answerArg = templateTokens[i+1].Text
-			break
+
+	var gotZones []string
+	for _, block := range blocks {
+		if len(block.Keys) != 1 {
+			t.Fatalf("expected exactly one key per block, got %q\n%s", block.Keys, out)
+		}
+		gotZones = append(gotZones, block.Keys[0])
+
+		got := map[string]string{}
+		for directive, tokens := range block.Tokens {
+			var texts []string
+			for _, tok := range tokens {
+				texts = append(texts, tok.Text)
+			}
+			got[directive] = strings.Join(texts, " ")
+		}
+		transport := "prefer_udp"
+		if forceTCP {
+			transport = "force_tcp"
+		}
+		want := map[string]string{
+			"bind":       testBind,
+			"errors":     "errors",
+			"prometheus": "prometheus :9253",
+			"cache":      "cache { success 9984 30 denial 9984 5 }",
+			"forward":    "forward . " + testClusterDNS + " { " + transport + " }",
+		}
+		if !reflect.DeepEqual(got, want) {
+			t.Errorf("block %q has unexpected directives:\n got: %v\nwant: %v\n%s", block.Keys[0], got, want, out)
 		}
 	}
-	want := "{{ .Name }} 60 IN A 1.2.3.4"
-	if answerArg != want {
-		t.Errorf("answer argument = %q, want %q", answerArg, want)
+
+	want := make([]string, 0, len(wantZones))
+	for _, z := range wantZones {
+		want = append(want, z+":53")
+	}
+	sort.Strings(want)
+	if !reflect.DeepEqual(gotZones, want) {
+		t.Errorf("unexpected zones:\n got: %q\nwant: %q\n%s", gotZones, want, out)
 	}
 }
 
-// TestUnsupportedPluginIsForwarded covers usage of the `file` and `ready`
-// plugins (and others), none of which are compiled into node-local-dns.
-// Such blocks must be replaced with a forward to coredns rather than emitted
-// verbatim, otherwise node-local-dns crashes with "no action found for
-// directive ... (missing a plugin?)".
-func TestUnsupportedPluginIsForwarded(t *testing.T) {
-	for _, plugin := range []string{"file", "ready", "kubernetes", "auto"} {
-		t.Run(plugin, func(t *testing.T) {
-			input := "example.com:8053 {\n    " + plugin + " /etc/coredns/example.com.zone\n    log\n}\n"
-			out := runBuild(t, input)
+func TestExactOutput(t *testing.T) {
+	out := runBuild(t, `corp.example:8053 {
+    errors
+    cache {
+        success 1024 600
+        denial 1024 120
+    }
+    forward . 10.1.2.3 {
+        prefer_udp
+    }
+}
+`)
+	want := `corp.example:53 {
+    bind 169.254.20.10 100.104.0.10
+    errors
+    prometheus :9253
+    cache {
+        success 9984 30
+        denial 9984 5
+    }
+    forward . 100.104.0.11 {
+        force_tcp
+    }
+}
 
-			if !strings.Contains(out, "forward . "+testClusterDNS) {
-				t.Errorf("expected fallback forward to clusterDNS for unsupported plugin %q; got:\n%s", plugin, out)
-			}
-			if strings.Contains(out, plugin+" /etc/coredns") {
-				t.Errorf("output should not contain unsupported %q directive after rewrite; got:\n%s", plugin, out)
-			}
-			if !strings.Contains(out, "    "+testBind+"\n") {
-				t.Errorf("expected bind statement in forwarded block; got:\n%s", out)
-			}
-			if _, err := loadServerBlocks("Corefile", strings.NewReader(out)); err != nil {
-				t.Errorf("regenerated config failed to parse: %v\n%s", err, out)
+`
+	if out != want {
+		t.Errorf("unexpected output:\n got: %q\nwant: %q", out, want)
+	}
+}
+
+func TestForwardTransport(t *testing.T) {
+	for _, test := range []struct {
+		name     string
+		forceTCP bool
+	}{
+		{name: "forceTCP", forceTCP: true},
+		{name: "preferUDP", forceTCP: false},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			zones := map[string]struct{}{"corp.example": {}, "other.example": {}}
+			var buf bytes.Buffer
+			renderServerBlocks(zones, testBind, testClusterDNS, test.forceTCP, &buf)
+			assertForwardOnlyWithTransport(t, buf.String(), test.forceTCP, "corp.example", "other.example")
+		})
+	}
+}
+
+func TestMetricsEnabledForEveryZone(t *testing.T) {
+	out := runBuild(t, "corp.example:8053 other.example:8053 {\n    errors\n}\n")
+	if got := strings.Count(out, "prometheus :9253"); got != 2 {
+		t.Errorf("expected metrics on port 9253 in both server blocks, got %d:\n%s", got, out)
+	}
+	assertForwardOnly(t, out, "corp.example", "other.example")
+}
+
+func TestEmptyInputProducesEmptyOutput(t *testing.T) {
+	if out := runBuild(t, "", "# only a comment\n"); out != "" {
+		t.Errorf("expected empty output, got:\n%s", out)
+	}
+}
+
+// TestBlockBodiesAreNeverCopied ensures that only the zone of a server block is
+// used. Plugins (supported by node-local-dns or not), bind statements and
+// arbitrary arguments must never reach the generated configuration.
+func TestBlockBodiesAreNeverCopied(t *testing.T) {
+	out := runBuild(t, `example.com:8053 {
+    bind 0.0.0.0
+    log
+    file /etc/coredns/example.com.zone
+    hosts {
+        6.6.6.6 example.com
+        fallthrough
+    }
+    template IN ANY example.com {
+        answer "{{ .Name }} 60 IN A 10.250.0.5"
+    }
+    rewrite name exact foo.example.com kubernetes.default.svc.cluster.local
+}
+`)
+	for _, unwanted := range []string{"0.0.0.0", "log", "file", "hosts", "6.6.6.6", "template", "answer", "rewrite"} {
+		if strings.Contains(out, unwanted) {
+			t.Errorf("output must not contain %q:\n%s", unwanted, out)
+		}
+	}
+	assertForwardOnly(t, out, "example.com")
+}
+
+func TestKeyPortHandling(t *testing.T) {
+	out := runBuild(t, `a.example:8053 {
+    errors
+}
+b.example:53 {
+    errors
+}
+c.example:5353 {
+    errors
+}
+d.example {
+    errors
+}
+`)
+	assertForwardOnly(t, out, "a.example", "b.example")
+}
+
+func TestKeyNormalizationAndDeduplication(t *testing.T) {
+	out := runBuild(t,
+		`corp.example:8053 Other.Example.:53 dns://third.example:8053 {
+    errors
+}
+CORP.example.:53 {
+    errors
+}
+`,
+		`corp.example:8053 {
+    errors
+}
+`)
+	assertForwardOnly(t, out, "corp.example", "other.example", "third.example")
+}
+
+func TestInvalidKeysAreIgnored(t *testing.T) {
+	longLabel := strings.Repeat("a", 64)
+	longName := strings.Repeat(strings.Repeat("a", 63)+".", 4) + "example"
+	for _, key := range []string{
+		".:8053",
+		"tls://secure.example:8053",
+		"grpc://secure.example:8053",
+		"10.0.0.0/24:8053",
+		"*.example:8053",
+		"bad..example:8053",
+		".example:8053",
+		"exa$mple:8053",
+		"example.com:53:53",
+		longLabel + ".example:8053",
+		longName + ":8053",
+	} {
+		t.Run(key, func(t *testing.T) {
+			out := runBuild(t, key+" {\n    errors\n}\n")
+			if out != "" {
+				t.Errorf("key %q must be ignored, got:\n%s", key, out)
 			}
 		})
 	}
 }
 
-// TestSupportedPluginsAreEmittedVerbatim ensures that blocks composed only of
-// plugins available in node-local-dns continue to be emitted normally (no
-// fallback) - i.e. we did not break the existing behaviour.
-func TestSupportedPluginsAreEmittedVerbatim(t *testing.T) {
-	input := `db.example.com:8053 {
-    debug
-    cache 30
-    forward . 172.30.255.4
-}
-`
-	out := runBuild(t, input)
-
-	if strings.Contains(out, "forward . "+testClusterDNS) {
-		t.Errorf("expected NO fallback for fully supported block; got:\n%s", out)
-	}
-	if !strings.Contains(out, "forward . 172.30.255.4") {
-		t.Errorf("expected original forward directive to be preserved; got:\n%s", out)
-	}
-	if !strings.Contains(out, "    debug\n") {
-		t.Errorf("expected debug directive to be preserved; got:\n%s", out)
-	}
-	if !strings.Contains(out, "db.example.com:53") {
-		t.Errorf("expected port :8053 to be rewritten to :53 in keys; got:\n%s", out)
-	}
-}
-
-// TestMixedBlocksDecidedIndependently verifies that the unsupported-plugin
-// fallback is decided per server block - one bad block must not poison its
-// neighbours.
-func TestMixedBlocksDecidedIndependently(t *testing.T) {
-	input := `good.example:8053 {
-    cache 30
-    forward . 1.2.3.4
-}
-
-bad.example:8053 {
-    file /etc/coredns/bad.zone
-    log
-}
-`
-	out := runBuild(t, input)
-
-	if !strings.Contains(out, "forward . 1.2.3.4") {
-		t.Errorf("expected good block's forward to be preserved; got:\n%s", out)
-	}
-	if !strings.Contains(out, "forward . "+testClusterDNS) {
-		t.Errorf("expected bad block to fall back to clusterDNS forward; got:\n%s", out)
-	}
-	if strings.Contains(out, "file /etc/coredns/bad.zone") {
-		t.Errorf("bad block's file directive must not be emitted; got:\n%s", out)
-	}
-}
-
-// TestBlockWithoutPort53Or8053IsDropped preserves the existing behaviour of
-// dropping keys that do not address ports :53 or :8053.
-func TestBlockWithoutPort53Or8053IsDropped(t *testing.T) {
-	input := `example.org:9999 {
-    cache 30
-}
-`
-	out := runBuild(t, input)
-	if strings.TrimSpace(out) != "" {
-		t.Errorf("expected empty output for non-:53 / non-:8053 block; got:\n%s", out)
-	}
-}
-
-// TestRenderTokenTextQuoting unit-tests the quoting helper in isolation.
-func TestRenderTokenTextQuoting(t *testing.T) {
-	cases := []struct {
-		in, want string
-	}{
-		{"plain", "plain"},
-		{"{", "{"},
-		{"}", "}"},
-		{"", `""`},
-		{"with space", `"with space"`},
-		{"{{ .Name }} 60 IN A 1.2.3.4", `"{{ .Name }} 60 IN A 1.2.3.4"`},
-		{"hash#in#middle", `"hash#in#middle"`},
-		{`has"quote`, `"has\"quote"`},
-	}
-	for _, tc := range cases {
-		got := renderTokenText(tc.in)
-		if got != tc.want {
-			t.Errorf("renderTokenText(%q) = %q, want %q", tc.in, got, tc.want)
-		}
-	}
-}
-
-// TestForwardOnlyBlockSkipsOriginalBind verifies that even if the user's
-// custom config supplied a bind directive, we never end up with a duplicate
-// bind in a forward-only fallback block.
-func TestForwardOnlyBlockSkipsOriginalBind(t *testing.T) {
-	input := `example.com:8053 {
-    bind 1.2.3.4
-    file /etc/coredns/example.com.zone
-}
-`
-	out := runBuild(t, input)
-	if strings.Contains(out, "bind 1.2.3.4") {
-		t.Errorf("user-supplied bind must not leak into forward-only block; got:\n%s", out)
-	}
-	bindCount := strings.Count(out, "bind 169.254.20.10 100.104.0.10")
-	if bindCount != 1 {
-		t.Errorf("expected exactly one synthesised bind, got %d:\n%s", bindCount, out)
-	}
-}
-
-// TestEndToEndMixedSupportedConfig combines several supported server blocks,
-// including one using the `template` plugin with a quoted answer, and checks
-// the produced output is parseable, preserves the template's quoted answer,
-// keeps the supported blocks intact, and produces no "missing plugin" or
-// "unclosed action" failures when re-parsed.
-func TestEndToEndMixedSupportedConfig(t *testing.T) {
-	input := `db-a.example.com:8053 {
-    debug
-    cache 30
-    forward . 172.30.255.4
-}
-db-b.example.com:8053 {
-    debug
-    cache 30
-    forward . 172.30.255.4
-}
-templated.example.com:8053 {
-    log
+func TestSkippedZones(t *testing.T) {
+	out := runBuild(t, `cluster.local:8053 svc.cluster.local:8053 foo.svc.cluster.local:53 {
     errors
-    template IN ANY example.com {
-        match "^foo-[0-9a-z]+\.(example\.com\.)$|^bar-.*\.(example\.com\.)$"
-        answer "{{ .Name }} 60 IN A 10.250.0.5"
-        fallthrough
+}
+10.in-addr.arpa:8053 in-addr.arpa:53 ip6.arpa:8053 {
+    errors
+}
+notcluster.local:8053 local:8053 {
+    errors
+}
+`)
+	assertForwardOnly(t, out, "notcluster.local", "local")
+}
+
+func TestCustomSkipZones(t *testing.T) {
+	zones := map[string]struct{}{}
+	skip := parseSkipZones(" Custom.Domain. ,, in-addr.arpa")
+	if want := []string{"custom.domain", "in-addr.arpa"}; !reflect.DeepEqual(skip, want) {
+		t.Fatalf("parseSkipZones = %q, want %q", skip, want)
+	}
+	if err := collectZones([]byte("custom.domain:8053 sub.custom.domain:8053 cluster.local:8053 {\n    errors\n}\n"), skip, zones); err != nil {
+		t.Fatal(err)
+	}
+	var buf bytes.Buffer
+	renderServerBlocks(zones, testBind, testClusterDNS, true, &buf)
+	assertForwardOnly(t, buf.String(), "cluster.local")
+}
+
+func TestParseErrorIsReturned(t *testing.T) {
+	err := collectZones([]byte("broken.example:8053 {\n    errors\n"), testSkipZones, map[string]struct{}{})
+	if err == nil {
+		t.Fatal("expected an error for unbalanced braces")
+	}
+}
+
+// TestInjectionViaQuotedKey: a quoted multi-line key must not be emitted as
+// raw Corefile structure.
+func TestInjectionViaQuotedKey(t *testing.T) {
+	out := runBuild(t, `"evil.example:53 {
+    bind 0.0.0.0
+    whatever_unsupported_plugin
+    hosts {
+        6.6.6.6 kubernetes.default.svc.cluster.local
     }
 }
-`
-	out := runBuild(t, input)
+decoy.invalid:53" {
+    errors
+}
+legit.example:8053 {
+    errors
+}
+`)
+	if strings.Contains(out, "0.0.0.0") || strings.Contains(out, "evil") || strings.Contains(out, "decoy") {
+		t.Errorf("injected key leaked into output:\n%s", out)
+	}
+	assertForwardOnly(t, out, "legit.example")
+}
 
-	// Round-trip parse must succeed. This is the property that was broken in
-	// production (the lexer reported "unclosed action").
-	parsed, err := loadServerBlocks("Corefile", strings.NewReader(out))
+// TestInjectionViaMultiLineArgument: tokens following a multi-line quoted
+// argument must not turn into standalone directives.
+func TestInjectionViaMultiLineArgument(t *testing.T) {
+	out := runBuild(t, `x.example:53 {
+    log "a
+b" bind 0.0.0.0
+    rewrite "a
+b" unknown_plugin
+}
+`)
+	assertForwardOnly(t, out, "x.example")
+}
+
+// TestInjectionViaEscapedQuote: backslash/quote sequences in arguments must not
+// desynchronize quoting of the generated configuration.
+func TestInjectionViaEscapedQuote(t *testing.T) {
+	out := runBuild(t, `y.example:53 {
+    log a\" b
+    template IN A y.example {
+        answer "a\" } z.example:53 { bind 0.0.0.0 } #"
+    }
+}
+`)
+	assertForwardOnly(t, out, "y.example")
+}
+
+func TestWriteNewConfigToFile(t *testing.T) {
+	for _, test := range []struct {
+		name     string
+		forceTCP bool
+	}{
+		{name: "forceTCP", forceTCP: true},
+		{name: "preferUDP", forceTCP: false},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			inputDir := t.TempDir()
+			outputDir := t.TempDir()
+			files := map[string]string{
+				"a.server":          "corp.example:8053 {\n    forward . 10.1.2.3\n}\n",
+				"b.server":          "corp.example:8053 {\n    errors\n}\nlegacy.example:8053 {\n    file /zones/legacy.db\n}\n",
+				"corefile.override": "hosts {\n    6.6.6.6 override.example\n}\n",
+				"ignored.txt":       "ignored.example:8053 {\n    errors\n}\n",
+			}
+			for name, content := range files {
+				if err := os.WriteFile(filepath.Join(inputDir, name), []byte(content), 0600); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if err := os.Mkdir(filepath.Join(inputDir, "dir.server"), 0700); err != nil {
+				t.Fatal(err)
+			}
+
+			if err := writeNewConfigToFile(inputDir, outputDir, testBind, testClusterDNS, testSkipZones, test.forceTCP); err != nil {
+				t.Fatalf("writeNewConfigToFile returned error: %v", err)
+			}
+			out, err := os.ReadFile(filepath.Join(outputDir, "custom-server-block.server"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			assertForwardOnlyWithTransport(t, string(out), test.forceTCP, "corp.example", "legacy.example")
+		})
+	}
+}
+
+func TestWriteNewConfigToFileFailsOnInvalidFile(t *testing.T) {
+	inputDir := t.TempDir()
+	outputDir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(inputDir, "broken.server"), []byte("broken.example:8053 {\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := writeNewConfigToFile(inputDir, outputDir, testBind, testClusterDNS, testSkipZones, true); err == nil {
+		t.Fatal("expected an error for an unparsable server file")
+	}
+	outputFile := filepath.Join(outputDir, "custom-server-block.server")
+	if _, err := os.Stat(outputFile); !os.IsNotExist(err) {
+		t.Errorf("output file must not be written when a server file is invalid (stat err: %v)", err)
+	}
+
+	previous := runBuild(t, "previous.example:8053 {\n    errors\n}\n")
+	if err := os.WriteFile(outputFile, []byte(previous), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := writeNewConfigToFile(inputDir, outputDir, testBind, testClusterDNS, testSkipZones, false); err == nil {
+		t.Fatal("expected an error for an unparsable server file")
+	}
+	out, err := os.ReadFile(outputFile)
 	if err != nil {
-		t.Fatalf("regenerated config did not parse: %v\n%s", err, out)
+		t.Fatal(err)
 	}
-	if len(parsed) != 3 {
-		t.Fatalf("expected 3 server blocks, got %d:\n%s", len(parsed), out)
-	}
-	if !strings.Contains(out, `answer "{{ .Name }} 60 IN A 10.250.0.5"`) {
-		t.Errorf("template answer lost its quoting; got:\n%s", out)
-	}
-	if !strings.Contains(out, "forward . 172.30.255.4") {
-		t.Errorf("supported forward directive must be preserved; got:\n%s", out)
-	}
-	// None of the three blocks in this input use unsupported plugins, so the
-	// fallback forward to clusterDNS must NOT appear.
-	if strings.Contains(out, "forward . "+testClusterDNS) {
-		t.Errorf("did not expect fallback for fully-supported config; got:\n%s", out)
+	if string(out) != previous {
+		t.Errorf("previous output must remain unchanged on parse errors:\n%s", out)
 	}
 }
